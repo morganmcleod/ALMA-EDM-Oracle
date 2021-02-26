@@ -208,33 +208,34 @@ class EDM():
         '''
         print('loadDocuments forum: ' + forum['name'])
         
-        DOCID = 0
-        DOCCONTENT = 1
-        DOCUMENTTYPE = 2
-        TOPPARENTID = 3
-        PARENTFOLDER = 4
-        PARENTID = 5
-        DOCNUMBER = 6
-        CREATEDBY = 7
-        CREATEDON = 8
-        MODIFIEDBY = 9
-        MODIFIEDON = 10
-        KEYWORDS = 11    # CATEGORY in TABLE_D
-        TITLE = 12
-        UPLOADFILEINFO = 13
-        ISWORKFLOW = 14
-        LOGO = 15
-        TE_VALUES = 16
-        DE_VALUES = 17
-        WORKFLOWDATA = 18
-        ABSTRACT = 19
+        DOCID           = 0
+        DOCCONTENT      = 1
+        DOCUMENTTYPE    = 2
+        TOPPARENTID     = 3
+        PARENTFOLDER    = 4
+        PARENTID        = 5
+        DOCNUMBER       = 6
+        CREATEDBY       = 7
+        CREATEDON       = 8
+        MODIFIEDBY      = 9
+        MODIFIEDON      = 10
+        KEYWORDS        = 11 # CATEGORY
+        TITLE           = 12
+        UPLOADFILEINFO  = 13
+        ISWORKFLOW      = 14 # WORKFLOWWFP
+        WORKFLOWSTATE   = 15
+        LOGO            = 16
+        TE_VALUES       = 17
+        DE_VALUES       = 18
+        WORKFLOWDATA    = 19
+        ABSTRACT        = 20
         
         tablePrefix = forum['attrs']['TABLEPREFIX']
         table_D = "{}_D".format(tablePrefix).upper()
         table_K = "{}_K".format(tablePrefix).upper()
         
         q = '''SELECT d.DOCID,d.DOCCONTENT,d.DOCUMENTTYPE,d.TOPPARENTID,d.PARENTFOLDER,d.PARENTID,d.DOCNUMBER,
-            d.CREATEDBY,d.CREATEDON,d.MODIFIEDBY,d.MODIFIEDON,d.CATEGORY,d.TITLE,d.UPLOADFILEINFO,d.WORKFLOWWFP,
+            d.CREATEDBY,d.CREATEDON,d.MODIFIEDBY,d.MODIFIEDON,d.CATEGORY,d.TITLE,d.UPLOADFILEINFO,d.WORKFLOWWFP,d.WORKFLOWSTATE,
             k1.KVPVAL AS LOGO, k2.KVPVAL AS TE_VALUES, k3.KVPVAL AS DE_VALUES, k4.KVPVAL AS WORKFLOWDATA, k5.KVPVAL AS ABSTRACT
             FROM {} d LEFT OUTER JOIN {} k1
             ON d.DOCID = k1.DOCID AND k1.KVPID = 'logo'
@@ -269,17 +270,11 @@ class EDM():
                 if title.lower() == 'none':
                     title = ''
                 if title:
-                    try:
-                        title = re.sub(self.ILLEGAL_CHARACTERS_RE, ' ', title)
-                    except:
-                        raise
+                    title = re.sub(self.ILLEGAL_CHARACTERS_RE, ' ', title)
                 
                 abstract = row[ABSTRACT].strip() if row[ABSTRACT] else ''
                 if abstract:
-                    try:
-                        abstract = re.sub(self.ILLEGAL_CHARACTERS_RE, ' ', abstract)
-                    except:
-                        raise
+                    abstract = re.sub(self.ILLEGAL_CHARACTERS_RE, ' ', abstract)
                 
                 attrs = {'DOCCONTENT' : row[DOCCONTENT], 
                          'DOCUMENTTYPE' : row[DOCUMENTTYPE],
@@ -295,6 +290,7 @@ class EDM():
                          'TITLE' : title,
                          'UPLOADFILEINFO' : row[UPLOADFILEINFO],
                          'ISWORKFLOW' : row[ISWORKFLOW],
+                         'WORKFLOWSTATE' : row[WORKFLOWSTATE],
                          'LOGO' : row[LOGO], 
                          'WORKFLOWDATA' : row[WORKFLOWDATA],
                          'ABSTRACT' : abstract
@@ -307,7 +303,7 @@ class EDM():
                 te_values = row[TE_VALUES]
                 attrs = {**attrs, **self.parseTE_Values(te_values)}
                 
-                # unpack DE_VALUES into AUTHORS, ALMA_DOC_NUMBER, FILENAME
+                # unpack DE_VALUES into AUTHORS, ALMA_DOC_NUMBER, FILE_NAME_DE
                 de_values = row[DE_VALUES]
                 attrs = {**attrs, **self.parseDE_Values(de_values)}
 
@@ -471,7 +467,7 @@ class EDM():
         'Keywords (++)',        #6 KEYWORDS
         'Editors',              #7 TE_VALUES groupeso -> EDITORS
         'ALMA DOC Number (++)', #8 TE_VALUES number -> ALMA_DOC_NUMBER or from DE_VALUES
-        'File Name (++)',       #9 from UPLOADFILEINFO -> FILE_NAME or from DE_VALUES
+        'File Name (++)',       #9 FILE_NAME_UL or FILE_NAME_DE
         'Document Type (++)',   #10 from ALMA_DOC_NUMBER -> DOC_TYPE
         'Owner Name (++)',      #11 same as Authors[0]
         'Version (++)',         #12 from ALMA_DOC_NUMBER -> DOC_VERSION
@@ -483,7 +479,7 @@ class EDM():
         'Released By (++)',     #18 ''
         'CCB Flag (++)',        #19 ISWORKFLOW not NULL
         'Security Mode (++)',   #20 ''
-        'Document Status (++)', #21 TE_VALUES status -> DOC_STATUS or from WORKFLOWDATA [uncontrolled, draft, Under Revision, approved, released, superseded, obsolete, withdrawn]
+        'Document Status (++)', #21 TE_VALUES status -> DOC_STATUS or WORKFLOWSTATE [uncontrolled, draft, Under Revision, approved, released, superseded, obsolete, withdrawn]
         'Issuance Agency ++',   #22 from LOGO -> ISS_AGENCY [ESO, NAOJ, NRAO, JAO, Not ALMA DOC] 
         'Doc abstract',         #23 ABSTRACT
         'File Type',            #24 from FILE_NAME -> FILE_TYPE [Adobe PDF, AUTOCAD DWG, MS Word, MS PowerPoint, MS Excel, Txt, MS Project, MS Visio]
@@ -492,7 +488,7 @@ class EDM():
     ] 
 
     def writeMigrationXLSX(self, outFile):
-        sheet = tablib.Dataset()
+        sheet = tablib.Dataset(title="Migration")
         sheet.headers = self.OUTPUT_COLUMNS
 
         # owner of the document subtree we are exploring:
@@ -512,6 +508,8 @@ class EDM():
 
             if docOwner == 'STOP!':
                 break
+            
+            print('writeMigration forum: ' + forum['name'])
 
             for doc in forum['attrs']['docshare'].depthFirst(doneHook = doneHook):
                 owner = doc['attrs'].get('OWNER', False)
@@ -523,7 +521,7 @@ class EDM():
                     break
                 
                 # write documents to the outfile
-                if docOwner and doc['attrs'].get('UPLOADFILEINFO'):                    
+                if docOwner and (doc['attrs'].get('UPLOADFILEINFO') or doc['attrs'].get('FILE_NAME_DE')):
                     docTitle = doc['attrs'].get('TITLE', '')
                     # guard against TITLE had falsy value:
                     if not docTitle:
@@ -533,13 +531,21 @@ class EDM():
                     almaDocNum = doc['attrs'].get('ALMA_DOC_NUMBER', None)
                     doc['attrs'] = {**doc['attrs'], **self.parseAlmaDocNum(almaDocNum)}
                     
-                    # from WORKFLOWDATA unpack DOC_STATUS, REVIEWED_BY, APPROVED_BY
+                    # from WORKFLOWDATA, WORKFLOWSTATE unpack DOC_STATUS, REVIEWED_BY, APPROVED_BY                    
                     workflowData = doc['attrs'].get('WORKFLOWDATA', None)
-                    doc['attrs'] = {**doc['attrs'], **self.parseWorkflowData(workflowData)}
+                    workflowState = doc['attrs'].get('WORKFLOWSTATE', None)
+                    doc['attrs'] = {**doc['attrs'], **self.parseWorkflow(workflowData, workflowState)}
                     
-                    # unpack UPLOADFILEINFO into FILE_NAME, FILE_TYPE, UPLOAD_BY, UPLOAD_DATETIME
-                    uploads = doc['attrs'].get('UPLOADFILEINFO', None) 
+                    # unpack UPLOADFILEINFO into FILE_NAME_UL, UPLOAD_BY, UPLOAD_DATETIME
+                    uploads = doc['attrs'].get('UPLOADFILEINFO', None)
                     doc['attrs'] = {**doc['attrs'], **self.parseUploadFileInfo(uploads)}
+                    
+                    # unpack FILENAME_DE or FILE_NAME_UL into FILE_TYPE
+                    fileName = doc['attrs'].get('FILE_NAME_DE', None)
+                    if not fileName:
+                        fileName = doc['attrs'].get('FILE_NAME_UL', None)
+                    doc['attrs']['FILE_NAME'] = fileName
+                    doc['attrs'] = {**doc['attrs'], **self.parseFilename(fileName)}
                     
                     # unpack LOGO into POSTED_BY, ISS_AGENCY
                     logo = doc['attrs'].get('LOGO', None)
@@ -654,39 +660,35 @@ class EDM():
                     
     def parseDE_Values(self, de_values:str):
         attrsOut = {'ALMA_DOC_NUMBER' : '',
-                    'FILE_NAME' : '',
+                    'FILE_NAME_DE' : '',
                     'AUTHORS' : ''
                     } 
         if de_values:
             lookup = {'de_ele8671' : 'ALMA_DOC_NUMBER',
-                      'de_ele10279' : 'FILE_NAME',
+                      'de_ele10279' : 'FILE_NAME_DE',
                       'de_ele12796' : 'AUTHORS'
                       }
             de_values = self.splitOnBracketsOrSpace(de_values)
             attrsOut = {**attrsOut, **self.parsePairs(de_values, lookup)}
         return attrsOut
     
-    def parseWorkflowData(self, workflowData:str):
+    def parseWorkflow(self, workflowData:str, workflowState:str):
         attrsOut = {'DOC_STATUS' : '',
                     'APPROVED_BY' : '',
                     'REVIEWED_BY' : '',
                     'WITHDRAWN_BY' : ''                       
                     }
+        
+        if workflowState:
+            attrsOut['DOC_STATUS'] = workflowState 
+        
         if workflowData:
-            #uncontrolled, draft, Under Revision, approved, released, superseded, obsolete, withdrawn
-    
             lookup = {'r.Approved Document' : 'APPROVED_BY',
                       'r.in Technical Review' : 'REVIEWED_BY',
                       'r.Withdrawn Document' : 'WITHDRAWN_BY'
                       }
             workflowData = self.splitOnBracketsOrSpace(workflowData)
             attrsOut = {**attrsOut, **self.parsePairs(workflowData, lookup)}
-            if attrsOut.get('APPROVED_BY'):
-                attrsOut['DOC_STATUS'] = 'approved'
-            elif attrsOut.get('REVIEWED_BY'):
-                attrsOut['DOC_STATUS'] = 'under revision'
-            elif attrsOut.get('WITHDRAWN_BY'):
-                attrsOut['DOC_STATUS'] = 'withdrawn'
         return attrsOut
 
     def parseAlmaDocNum(self, almaDocNum:str):
@@ -702,8 +704,7 @@ class EDM():
         return attrsOut
                     
     def parseUploadFileInfo(self, uploadFileInfo:str):
-        attrsOut = {'FILE_NAME' : '',
-                    'FILE_TYPE' : '',
+        attrsOut = {'FILE_NAME_UL' : '',
                     'UPLOAD_NUM' : '',
                     'UPLOAD_BY' : '',
                     'UPLOAD_DATETIME' : ''
@@ -712,15 +713,20 @@ class EDM():
             upload = self.splitOnBracketsOrSpace(uploadFileInfo)
             if len(upload) >= 1:
                 filename = upload[0]
-                attrsOut['FILE_NAME'] = filename
-                ext = os.path.splitext(filename)
-                ext = ext[1].strip('.').lower() if len(ext) >= 2 else ''
+                attrsOut['FILE_NAME_UL'] = filename
             if len(upload) >= 2:
                 attrsOut['UPLOAD_NUM'] = upload[1]    # what is this number?
             if len(upload) >= 3:
                 attrsOut['UPLOAD_BY'] = upload[2]
             if len(upload) >= 4:
                 attrsOut['UPLOAD_DATETIME'] = upload[3]
+        return attrsOut
+
+    def parseFilename(self, filename:str):
+        attrsOut = {'FILE_TYPE' : ''}
+        if filename:
+            ext = os.path.splitext(filename)
+            ext = ext[1].strip('.').lower() if len(ext) >= 2 else ''
                 
             if ext in ['pdf']:
                 attrsOut['FILE_TYPE'] = 'Adobe PDF'
@@ -759,7 +765,7 @@ class EDM():
                 email = logo[5].split('@')
                 if len(email) >= 2:
                     domain = email[1].lower()
-                    if domain in ['nrao.edu', 'nrao.cl', 'nrc-cnrc.gc.ca', 'nrc.gc.ca', 'nrc.ca'] :
+                    if domain in ['nrao.edu', 'aoc.nrao.edu', 'nrao.cl', 'nrc-cnrc.gc.ca', 'nrc.gc.ca', 'nrc.ca'] :
                         attrsOut['ISS_AGENCY'] = 'NRAO'
                     elif postedBy in ['ral'] or \
                            domain in ['eso.org', 'iram.fr', 'oan.es', 'rl.ac.uk', 'sron.rug.nl', 'sron.nl', 
