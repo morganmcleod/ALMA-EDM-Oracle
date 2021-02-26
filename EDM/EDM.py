@@ -1,6 +1,7 @@
 import os.path
 import tablib
 import configparser
+import re
 from EDM.EDMTree import EDMTree
 from ALMAFE.basic.ParseTimeStamp import ParseTimeStamp
 from ALMAFE.database.DriverMySQL import DriverMySQL as driverSQL
@@ -16,6 +17,7 @@ class EDM():
     '''
     
     TIMESTAMP_FORMAT = '%Y/%m/%d-%H:%M:%S'  # used for timestamps in SITESCAPE
+    ILLEGAL_CHARACTERS_RE = '[\000-\010]|[\013-\014]|[\016-\037]+'
 
     def __init__(self):
         self.__loadConfiguration()
@@ -136,10 +138,11 @@ class EDM():
         with open(outFile, 'wb') as f:
             f.write(output)  
     
-    def readForumsXLSX(self, inFile):
+    def readForumsXLSX(self, inFile, loadDocshares = True):
         '''
         Read an existing Excel file having OWNERs marked, and update my forums tree.
         :param inFile: Excel file having the Forums structure and OWNERs marked
+        :param loadDocshares: if True, proceed to load the selected docshares.
         '''
         OWNER = 0
         FORUMNAME = 2
@@ -152,15 +155,21 @@ class EDM():
                     forum['attrs']['OWNER'] = row[OWNER]
                 else:
                     print('Forum not found: ' + row[FORUMNAME])
+        if loadDocshares:
+            self.loadDocshares()
+            
 
-    def clearSelectedDocuments(self):
+    def clearDocshares(self):
+        '''
+        Delete any previously loaded docshares
+        '''
         for forum in self.forums.insertionOrder():
             try:
                 del forum['attrs']['docshare']
             except:
                 pass
             
-    def loadSelectedDocuments(self):
+    def loadDocshares(self):
         '''
         Load the document trees for all the Forums currently marked with an OWNER 
         '''
@@ -213,10 +222,12 @@ class EDM():
         KEYWORDS = 11    # CATEGORY in TABLE_D
         TITLE = 12
         UPLOADFILEINFO = 13
-        WORKFLOWINFO = 14
+        ISWORKFLOW = 14
         LOGO = 15
         TE_VALUES = 16
-        ABSTRACT = 17
+        DE_VALUES = 17
+        WORKFLOWDATA = 18
+        ABSTRACT = 19
         
         tablePrefix = forum['attrs']['TABLEPREFIX']
         table_D = "{}_D".format(tablePrefix).upper()
@@ -224,14 +235,18 @@ class EDM():
         
         q = '''SELECT d.DOCID,d.DOCCONTENT,d.DOCUMENTTYPE,d.TOPPARENTID,d.PARENTFOLDER,d.PARENTID,d.DOCNUMBER,
             d.CREATEDBY,d.CREATEDON,d.MODIFIEDBY,d.MODIFIEDON,d.CATEGORY,d.TITLE,d.UPLOADFILEINFO,d.WORKFLOWWFP,
-            k1.KVPVAL AS LOGO, k2.KVPVAL AS TE_VALUES, k3.KVPVAL AS ABSTRACT
+            k1.KVPVAL AS LOGO, k2.KVPVAL AS TE_VALUES, k3.KVPVAL AS DE_VALUES, k4.KVPVAL AS WORKFLOWDATA, k5.KVPVAL AS ABSTRACT
             FROM {} d LEFT OUTER JOIN {} k1
             ON d.DOCID = k1.DOCID AND k1.KVPID = 'logo'
             LEFT OUTER JOIN {} k2
             ON d.DOCID = k2.DOCID AND k2.KVPID = 'te_values'
             LEFT OUTER JOIN {} k3
-            ON d.DOCID = k3.DOCID AND k3.KVPID = 'abstractText'
-            ORDER BY d.DOCID'''.format(table_D, table_K, table_K, table_K)
+            ON d.DOCID = k3.DOCID AND k3.KVPID = 'de_values'
+            LEFT OUTER JOIN {} k4
+            ON d.DOCID = k4.DOCID AND k4.KVPID = 'workflowData'
+            LEFT OUTER JOIN {} k5
+            ON d.DOCID = k5.DOCID AND k5.KVPID = 'abstractText'
+            ORDER BY d.DOCID'''.format(table_D, table_K, table_K, table_K, table_K, table_K)
         
         # make the docshare tree for this forum:
         forum['attrs']['docshare'] = EDMTree()
@@ -249,9 +264,22 @@ class EDM():
             
             lastDocID = None
             for row in rows:
+                
                 title = row[TITLE].strip() if row[TITLE] else ''
                 if title.lower() == 'none':
                     title = ''
+                if title:
+                    try:
+                        title = re.sub(self.ILLEGAL_CHARACTERS_RE, ' ', title)
+                    except:
+                        raise
+                
+                abstract = row[ABSTRACT].strip() if row[ABSTRACT] else ''
+                if abstract:
+                    try:
+                        abstract = re.sub(self.ILLEGAL_CHARACTERS_RE, ' ', abstract)
+                    except:
+                        raise
                 
                 attrs = {'DOCCONTENT' : row[DOCCONTENT], 
                          'DOCUMENTTYPE' : row[DOCUMENTTYPE],
@@ -266,14 +294,22 @@ class EDM():
                          'KEYWORDS' : row[KEYWORDS],
                          'TITLE' : title,
                          'UPLOADFILEINFO' : row[UPLOADFILEINFO],
-                         'WORKFLOWINFO' : row[WORKFLOWINFO],
+                         'ISWORKFLOW' : row[ISWORKFLOW],
                          'LOGO' : row[LOGO], 
-                         'TE_VALUES' : row[TE_VALUES],
-                         'ABSTRACT' : row[ABSTRACT]
+                         'WORKFLOWDATA' : row[WORKFLOWDATA],
+                         'ABSTRACT' : abstract
                         }
                 # mark 'folderFrame' parents:
                 if row[DOCCONTENT] and row[DOCCONTENT].startswith('application/x-wgw-id'):
                     attrs['FOLDERFRAME'] = row[DOCCONTENT].split()[1]
+
+                # unpack TE_VALUES into AUTHORS, EDITORS, ALMA_DOC_NUMBER, STATUS
+                te_values = row[TE_VALUES]
+                attrs = {**attrs, **self.parseTE_Values(te_values)}
+                
+                # unpack DE_VALUES into AUTHORS, ALMA_DOC_NUMBER, FILENAME
+                de_values = row[DE_VALUES]
+                attrs = {**attrs, **self.parseDE_Values(de_values)}
 
                 # add to documents tree, prevent duplicates on 1-many with k3.KVPID = 'abstractText'
                 if not lastDocID == row[DOCID]:
@@ -341,7 +377,7 @@ class EDM():
         :param forum: Node from self.forums tree having docshare to write
         '''
         sheet = tablib.Dataset(title=forum['name'])
-        sheet.headers = ['OWNER', 'DOCID', 'DOCNUMBER', 'TITLE', 'EDM URL', 'UPLOADFILEINFO']
+        sheet.headers = ['OWNER', 'DOCID', 'DOCNUMBER', 'TITLE', 'EDM_URL', 'FILE_NAME', 'UPLOADFILEINFO']
 
         # depth-first traversal of the Documents tree:        
         for doc in forum['attrs']['docshare'].depthFirst():
@@ -349,14 +385,17 @@ class EDM():
             if doc['attrs'].get('DOCUMENTTYPE', '') != 'reply':
                 docTitle = doc['attrs'].get('TITLE', '')
                 uploadFile = doc['attrs'].get('UPLOADFILEINFO', '')
-                # guard against TITLE had falsy value:
+                fileName = doc['attrs'].get('FILE_NAME', '')
+                # guard against falsy value:
                 if not docTitle:
                     docTitle = ''
                 if not uploadFile:
                     uploadFile = ''
+                if not fileName:
+                    fileName = ''
                 
                 # skip rows with no useful content:
-                if docTitle or uploadFile:         
+                if docTitle or uploadFile or fileName:
                            
                     # Handle FolderFrame items:
                     ffTarget = doc['attrs'].get('FOLDERFRAME', None)
@@ -381,6 +420,7 @@ class EDM():
                         doc['attrs'].get('DOCNUMBER', ''), 
                         indent + docTitle.strip().replace('\n', '\s'),
                         url,
+                        doc['attrs'].get('FILE_NAME', ''),
                         uploadFile.strip()
                     ])
                     
@@ -427,13 +467,13 @@ class EDM():
         'Doc ID ++',            #2 DOCID
         'Document Title (++)',  #3 TITLE
         'Subject (++)',         #4 ABSTRACT 
-        'Authors (++)',         #5 TE_VALUES authoreso -> AUTHORS
+        'Authors (++)',         #5 TE_VALUES authoreso -> AUTHORS or from DE_VALUES 
         'Keywords (++)',        #6 KEYWORDS
         'Editors',              #7 TE_VALUES groupeso -> EDITORS
-        'ALMA DOC Number (++)', #8 TE_VALUES number -> ALMA_DOC_NUMBER
-        'File Name (++)',       #9 from UPLOADFILEINFO -> FILE_NAME
+        'ALMA DOC Number (++)', #8 TE_VALUES number -> ALMA_DOC_NUMBER or from DE_VALUES
+        'File Name (++)',       #9 from UPLOADFILEINFO -> FILE_NAME or from DE_VALUES
         'Document Type (++)',   #10 from ALMA_DOC_NUMBER -> DOC_TYPE
-        'Owner Name (++)',      #11 same as Authors[0] ???
+        'Owner Name (++)',      #11 same as Authors[0]
         'Version (++)',         #12 from ALMA_DOC_NUMBER -> DOC_VERSION
         'Created (++)',         #13 CREATEDON 
         'Modified (++)',        #14 MODIFIEDON
@@ -441,9 +481,9 @@ class EDM():
         'Reviewed By (++)',     #16 Same as AUTHORS when not CCB Flag else ''
         'Approved By (++)',     #17 ''
         'Released By (++)',     #18 ''
-        'CCB Flag (++)',        #19 WORKFLOWINFO not NULL
+        'CCB Flag (++)',        #19 ISWORKFLOW not NULL
         'Security Mode (++)',   #20 ''
-        'Document Status (++)', #21 TE_VALUES status -> DOC_STATUS
+        'Document Status (++)', #21 TE_VALUES status -> DOC_STATUS or from WORKFLOWDATA [uncontrolled, draft, Under Revision, approved, released, superseded, obsolete, withdrawn]
         'Issuance Agency ++',   #22 from LOGO -> ISS_AGENCY [ESO, NAOJ, NRAO, JAO, Not ALMA DOC] 
         'Doc abstract',         #23 ABSTRACT
         'File Type',            #24 from FILE_NAME -> FILE_TYPE [Adobe PDF, AUTOCAD DWG, MS Word, MS PowerPoint, MS Excel, Txt, MS Project, MS Visio]
@@ -488,15 +528,23 @@ class EDM():
                     # guard against TITLE had falsy value:
                     if not docTitle:
                         docTitle = ''
-                    # unpack TE_VALUES into AUTHORS, EDITORS, ALMA_DOC_NUMBER, STATUS, DOC_TYPE, DOC_VERSION:
-                    te_values = doc['attrs'].get('TE_VALUES', None)
-                    doc['attrs'] = {**doc['attrs'], **self.parseTE_Values(te_values)}
+                    
+                    # from ALMA_DOC_NUMBER unpack DOC_TYPE, DOC_VERSION
+                    almaDocNum = doc['attrs'].get('ALMA_DOC_NUMBER', None)
+                    doc['attrs'] = {**doc['attrs'], **self.parseAlmaDocNum(almaDocNum)}
+                    
+                    # from WORKFLOWDATA unpack DOC_STATUS, REVIEWED_BY, APPROVED_BY
+                    workflowData = doc['attrs'].get('WORKFLOWDATA', None)
+                    doc['attrs'] = {**doc['attrs'], **self.parseWorkflowData(workflowData)}
+                    
                     # unpack UPLOADFILEINFO into FILE_NAME, FILE_TYPE, UPLOAD_BY, UPLOAD_DATETIME
                     uploads = doc['attrs'].get('UPLOADFILEINFO', None) 
                     doc['attrs'] = {**doc['attrs'], **self.parseUploadFileInfo(uploads)}
+                    
                     # unpack LOGO into POSTED_BY, ISS_AGENCY
                     logo = doc['attrs'].get('LOGO', None)
                     doc['attrs'] = {**doc['attrs'], **self.parseLogo(logo)}
+                    
                     # fix timestamp formats:
                     createdOn = doc['attrs'].get('CREATEDON', None)
                     modifiedOn = doc['attrs'].get('MODIFIEDON', None)
@@ -505,17 +553,20 @@ class EDM():
                     doc['attrs']['CREATEDON'] = createdOn
                     doc['attrs']['MODIFIEDON'] = modifiedOn
                     doc['attrs']['UPLOAD_DATETIME'] = uploadOn
+                    
                     # clean up abstract;
                     abstract = doc['attrs'].get('ABSTRACT', '')
                     if abstract:
                         abstract = strip_tags(abstract).replace('\n', ' ').replace('\r', ' ').strip()
+                    
                     # clean up authors:
                     authors = doc['attrs']['AUTHORS']
                     author0 = ''
                     if authors:
                         author0 = authors.split()[0]
+                    
                     # is workflow document?
-                    isWorkflow = doc['attrs'].get('WORKFLOWINFO', False)
+                    isWorkflow = doc['attrs'].get('ISWORKFLOW', False)
                     sheet.append([
                         forum['name'],
                         forum['attrs'].get('TITLE', ''),
@@ -533,8 +584,8 @@ class EDM():
                         doc['attrs']['CREATEDON'],
                         doc['attrs']['MODIFIEDON'],
                         doc['attrs'].get('MODIFIEDBY', ''),
-                        doc['attrs']['AUTHORS'] if not isWorkflow else '',
-                        '',     # Approved By
+                        doc['attrs'].get('REVIEWED_BY', '') if isWorkflow else doc['attrs']['AUTHORS'],
+                        doc['attrs'].get('APPROVED_BY', '') if isWorkflow else '',
                         '',     # Released By
                         '1' if isWorkflow else '0',
                         '',     # Security Mode
@@ -570,61 +621,106 @@ class EDM():
                     output.append(inputStr.strip())
                     inputStr = None
         return output
-            
-                
+    
+    def parsePairs(self, values:list, lookup:dict):
+        attrsOut = {}
+        while values:
+            try:
+                key = values.pop(0)
+                value = values.pop(0)
+            except:
+                pass
+            else:
+                field = lookup.get(key, False)
+                if field:
+                    attrsOut[field] = value
+        return attrsOut
+    
     def parseTE_Values(self, te_values:str):
         attrsOut = {'AUTHORS' : '',
                     'EDITORS' : '',
                     'ALMA_DOC_NUMBER' : '',
-                    'DOC_TYPE' : '',
-                    'DOC_VERSION' : '',
                     'DOC_STATUS' : ''
                    }
-        
         if te_values:
+            lookup = {'authoreso' : 'AUTHORS',
+                      'groupeso' : 'EDITORS',
+                      'number' : 'ALMA_DOC_NUMBER',
+                      'status' : 'DOC_STATUS'
+                      }
             te_values = self.splitOnBracketsOrSpace(te_values)
-            lastKey = None
-            for word in te_values:
-                if word == 'authoreso':
-                    lastKey = 'AUTHORS'
-                elif word == 'groupeso': 
-                    lastKey = 'EDITORS'
-                elif word == 'number':
-                    lastKey = 'ALMA_DOC_NUMBER'
-                elif word == 'status':
-                    lastKey = 'DOC_STATUS'
-                elif lastKey:
-                    attrsOut[lastKey] = word.replace('\n', ' ').replace('\r', ' ')
-                    lastKey = None
-            almaDoc = attrsOut.get('ALMA_DOC_NUMBER', '')
-            if almaDoc:
-                almaDoc = almaDoc.translate(str.maketrans('-.', '||')).split('|')
-                if len(almaDoc) >= 7:
-                    attrsOut['DOC_VERSION'] = almaDoc[6]
-                if len(almaDoc) >= 8:
-                    attrsOut['DOC_TYPE'] = almaDoc[7]
+            attrsOut = {**attrsOut, **self.parsePairs(te_values, lookup)}
         return attrsOut
                     
-    def parseUploadFileInfo(self, uploads):
+    def parseDE_Values(self, de_values:str):
+        attrsOut = {'ALMA_DOC_NUMBER' : '',
+                    'FILE_NAME' : '',
+                    'AUTHORS' : ''
+                    } 
+        if de_values:
+            lookup = {'de_ele8671' : 'ALMA_DOC_NUMBER',
+                      'de_ele10279' : 'FILE_NAME',
+                      'de_ele12796' : 'AUTHORS'
+                      }
+            de_values = self.splitOnBracketsOrSpace(de_values)
+            attrsOut = {**attrsOut, **self.parsePairs(de_values, lookup)}
+        return attrsOut
+    
+    def parseWorkflowData(self, workflowData:str):
+        attrsOut = {'DOC_STATUS' : '',
+                    'APPROVED_BY' : '',
+                    'REVIEWED_BY' : '',
+                    'WITHDRAWN_BY' : ''                       
+                    }
+        if workflowData:
+            #uncontrolled, draft, Under Revision, approved, released, superseded, obsolete, withdrawn
+    
+            lookup = {'r.Approved Document' : 'APPROVED_BY',
+                      'r.in Technical Review' : 'REVIEWED_BY',
+                      'r.Withdrawn Document' : 'WITHDRAWN_BY'
+                      }
+            workflowData = self.splitOnBracketsOrSpace(workflowData)
+            attrsOut = {**attrsOut, **self.parsePairs(workflowData, lookup)}
+            if attrsOut.get('APPROVED_BY'):
+                attrsOut['DOC_STATUS'] = 'approved'
+            elif attrsOut.get('REVIEWED_BY'):
+                attrsOut['DOC_STATUS'] = 'under revision'
+            elif attrsOut.get('WITHDRAWN_BY'):
+                attrsOut['DOC_STATUS'] = 'withdrawn'
+        return attrsOut
+
+    def parseAlmaDocNum(self, almaDocNum:str):
+        attrsOut = {'DOC_TYPE' : '',
+                    'DOC_VERSION' : '',
+                    }
+        if almaDocNum:
+            almaDoc = almaDocNum.translate(str.maketrans('-.', '||')).split('|')
+            if len(almaDoc) >= 7:
+                attrsOut['DOC_VERSION'] = almaDoc[6]
+            if len(almaDoc) >= 8:
+                attrsOut['DOC_TYPE'] = almaDoc[7]
+        return attrsOut
+                    
+    def parseUploadFileInfo(self, uploadFileInfo:str):
         attrsOut = {'FILE_NAME' : '',
                     'FILE_TYPE' : '',
                     'UPLOAD_NUM' : '',
                     'UPLOAD_BY' : '',
                     'UPLOAD_DATETIME' : ''
                     }
-        if uploads:
-            uploads = self.splitOnBracketsOrSpace(uploads)
-            if len(uploads) >= 1:
-                filename = uploads[0]
+        if uploadFileInfo:
+            upload = self.splitOnBracketsOrSpace(uploadFileInfo)
+            if len(upload) >= 1:
+                filename = upload[0]
                 attrsOut['FILE_NAME'] = filename
                 ext = os.path.splitext(filename)
                 ext = ext[1].strip('.').lower() if len(ext) >= 2 else ''
-            if len(uploads) >= 2:
-                attrsOut['UPLOAD_NUM'] = uploads[1]    # what is this number?
-            if len(uploads) >= 3:
-                attrsOut['UPLOAD_BY'] = uploads[2]
-            if len(uploads) >= 4:
-                attrsOut['UPLOAD_DATETIME'] = uploads[3]
+            if len(upload) >= 2:
+                attrsOut['UPLOAD_NUM'] = upload[1]    # what is this number?
+            if len(upload) >= 3:
+                attrsOut['UPLOAD_BY'] = upload[2]
+            if len(upload) >= 4:
+                attrsOut['UPLOAD_DATETIME'] = upload[3]
                 
             if ext in ['pdf']:
                 attrsOut['FILE_TYPE'] = 'Adobe PDF'
