@@ -35,7 +35,15 @@ class EDMTree():
         :return int key of new node
         '''
         name = str(name)
-        parent = str(parent)
+        if parent:
+            try:
+                # if parent is a key:
+                parent = self.store[parent]['name']
+            except:
+                # if parent is a name:
+                parent = str(parent)
+        else:
+            parent = None
        
         self.lastId += 1
         node = {'name' : name,

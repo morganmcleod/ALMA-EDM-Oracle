@@ -43,7 +43,7 @@ def test1():
         print(node['name'])
 
 def test2():
-    # Test a simpler tree for post-order = RPN calculator:
+    # Test a simpler tree for post-order = postfix calculator:
     # '2 * (3 + 4)' should represent as (2 (3 4 +) *)
     #
     # *
