@@ -124,8 +124,9 @@ class EDM():
         self.__loadConfiguration()
         # the main ALMA EDM database:
         self.driverOracle = driverOracle(self.OracleConfig)
-        # can also use a local MySQL server for some tables - for test/debug:    
-        self.driverMySQL = driverMySQL(self.MySQLConfig)        
+        # can also use a local MySQL server for some tables - for test/debug:
+        if self.MySQLConfig['enable']:
+            self.driverMySQL = driverMySQL(self.MySQLConfig)        
         self.reset()
         # start by loading the forums tree:
         self.loadAllForums()
@@ -154,7 +155,7 @@ class EDM():
             'port' : config['Oracle'].get('port', 1521)         # 1521
             }
         self.MySQLConfig = {
-            'enable' : config['MySQL']['enable'],   # global switch to enable/disable using the local MySQL server
+            'enable' : int(config['MySQL']['enable']),   # global switch to enable/disable using the local MySQL server
             'host' : config['MySQL']['host'],
             'user' : config['MySQL']['user'],
             'passwd' : config['MySQL']['passwd'],
@@ -201,7 +202,7 @@ class EDM():
             rows = self.driverMySQL.fetchall()
         else:
             self.driverOracle.execute(q)
-            self.driverOracle.fetchall()
+            rows = self.driverOracle.fetchall()
         
         # column indexes in query result:
         FORUMNAME = 0
@@ -434,12 +435,12 @@ class EDM():
                 if row[DOCCONTENT] and row[DOCCONTENT].startswith('application/x-wgw-id'):
                     attrs['FOLDERFRAME'] = row[DOCCONTENT].split()[1]
 
-                # unpack TE_VALUES into AUTHORS, EDITORS, ALMA_DOC_NUMBER_TE, STATUS
+                # unpack TE_VALUES into AUTHORS_TE, EDITORS, ALMA_DOC_NUMBER_TE, STATUS
                 te_values = row[TE_VALUES]
                 # merge dicts: values in second dict override values in first for matching key:
                 attrs = {**attrs, **self.parseTE_Values(te_values)}
                 
-                # unpack DE_VALUES into AUTHORS, ALMA_DOC_NUMBER_DE, FILE_NAME_DE
+                # unpack DE_VALUES into AUTHORS_DE, ALMA_DOC_NUMBER_DE, FILE_NAME_DE
                 de_values = row[DE_VALUES]
                 # values from DE_VALUES will override values from TE_VALUES:
                 attrs = {**attrs, **self.parseDE_Values(de_values)}
@@ -608,30 +609,30 @@ class EDM():
                 print('Forum not found: ' + sheet.title)
 
     OUTPUT_COLUMNS = [
-        'FORUM ID ++',          #0 FORUMNAME
-        'FORUM NAME ++',        #1 forum TITLE
-        'Doc ID ++',            #2 DOCID
-        'Document Title (++)',  #3 TITLE
-        'Subject (++)',         #4 ABSTRACT 
-        'Authors (++)',         #5 TE_VALUES authoreso -> AUTHORS or from DE_VALUES 
-        'Keywords (++)',        #6 KEYWORDS
+        'FORUM ID',          #0 FORUMNAME
+        'FORUM NAME',        #1 forum TITLE
+        'Doc ID',            #2 DOCID
+        'Document Title',  #3 TITLE
+        'Subject',         #4 ABSTRACT 
+        'Authors',         #5 AUTHORS_TE or AUTHORS_DE 
+        'Keywords',        #6 KEYWORDS
         'Editors',              #7 TE_VALUES groupeso -> EDITORS
-        'ALMA DOC Number (++)', #8 TE_VALUES number -> ALMA_DOC_NUMBER_TE or DE_VALUES -> ALMA_DOC_NUMBER_DE
-        'File Name (++)',       #9 FILE_NAME_UL or FILE_NAME_DE
-        'Document Type (++)',   #10 from ALMA_DOC_NUMBER -> DOC_TYPE
-        'Owner Name (++)',      #11 same as Authors[0]
-        'Version (++)',         #12 from ALMA_DOC_NUMBER -> DOC_VERSION
-        'Created (++)',         #13 CREATEDON 
-        'Modified (++)',        #14 MODIFIEDON
+        'ALMA DOC Number', #8 TE_VALUES number -> ALMA_DOC_NUMBER_TE or DE_VALUES -> ALMA_DOC_NUMBER_DE
+        'File Name',       #9 FILE_NAME_UL or FILE_NAME_DE
+        'Document Type',   #10 from ALMA_DOC_NUMBER -> DOC_TYPE
+        'Owner Name',      #11 same as Authors[0]
+        'Version',         #12 from ALMA_DOC_NUMBER -> DOC_VERSION
+        'Created',         #13 CREATEDON 
+        'Modified',        #14 MODIFIEDON
         'Modified By',          #15 MODIFIEDBY
-        'Reviewed By (++)',     #16 From WorkFlow or Same as AUTHORS if not CCB Flag
-        'Approved By (++)',     #17 From WorkFlow or ''
-        'Released By (++)',     #18 From WorkFlow or ''
-        'CCB Flag (++)',        #19 ISWORKFLOW not NULL
-        'Security Mode (++)',   #20 ''
-        'Document Status (++)', #21 TE_VALUES status -> DOC_STATUS_TE or WORKFLOWSTATE -> DOC_STATUS_WF
+        'Reviewed By',     #16 From WorkFlow or Same as AUTHORS if not CCB Flag
+        'Approved By',     #17 From WorkFlow or ''
+        'Released By',     #18 From WorkFlow or ''
+        'CCB Flag',        #19 ISWORKFLOW not NULL
+        'Security Mode',   #20 ''
+        'Document Status', #21 TE_VALUES status -> DOC_STATUS_TE or WORKFLOWSTATE -> DOC_STATUS_WF
                                 #   [uncontrolled, draft, Under Revision, approved, released, superseded, obsolete, withdrawn]
-        'Issuance Agency ++',   #22 from LOGO -> ISS_AGENCY [ESO, NAOJ, NRAO, JAO, Not ALMA DOC] 
+        'Issuance Agency',   #22 from LOGO -> ISS_AGENCY [ESO, NAOJ, NRAO, JAO, Not ALMA DOC] 
         'Doc abstract',         #23 ABSTRACT
         'File Type',            #24 from FILE_NAME -> FILE_TYPE 
                                 #   [Adobe PDF, AUTOCAD DWG, MS Word, MS PowerPoint, MS Excel, Txt, MS Project, MS Visio]
@@ -724,6 +725,15 @@ class EDM():
                     abstract = doc['attrs'].get('ABSTRACT', '')
                     if abstract:
                         abstract = strip_tags(abstract).replace('\n', ' ').replace('\r', ' ').strip()
+
+                    # is workflow document?
+                    isWorkflow = doc['attrs'].get('ISWORKFLOW', False)
+                    
+                    # set AUTHORS depending on workflow:
+                    if isWorkflow:
+                        doc['attrs']['AUTHORS'] = doc['attrs']['AUTHORS_DE']
+                    else:
+                        doc['attrs']['AUTHORS'] = doc['attrs']['AUTHORS_TE']
                     
                     # find first author:
                     authors = doc['attrs']['AUTHORS']
@@ -731,8 +741,6 @@ class EDM():
                     if authors:
                         author0 = authors.split()[0]
                     
-                    # is workflow document?
-                    isWorkflow = doc['attrs'].get('ISWORKFLOW', False)
                     sheet.append([
                         forum['name'],
                         forum['attrs'].get('TITLE', ''),
@@ -796,13 +804,13 @@ class EDM():
         :param te_values: str
         :return dict of {str : str} of matching items found in te_vaues
         '''
-        attrsOut = {'AUTHORS' : '',
+        attrsOut = {'AUTHORS_TE' : '',
                     'EDITORS' : '',
                     'ALMA_DOC_NUMBER_TE' : '',
                     'DOC_STATUS_TE' : ''
                    }
         if te_values:
-            lookup = {'authoreso' : 'AUTHORS',
+            lookup = {'authoreso' : 'AUTHORS_TE',
                       'groupeso' : 'EDITORS',
                       'number' : 'ALMA_DOC_NUMBER_TE',
                       'status' : 'DOC_STATUS_TE'
@@ -819,12 +827,12 @@ class EDM():
         '''
         attrsOut = {'ALMA_DOC_NUMBER_DE' : '',
                     'FILE_NAME_DE' : '',
-                    'AUTHORS' : ''
+                    'AUTHORS_DE' : ''
                     } 
         if de_values:
             lookup = {'de_ele8671' : 'ALMA_DOC_NUMBER_DE',
                       'de_ele10279' : 'FILE_NAME_DE',
-                      'de_ele12796' : 'AUTHORS'
+                      'de_ele12796' : 'AUTHORS_DE'
                       }
             de_values = splitOnBracketsOrSpace(de_values)
             attrsOut = {**attrsOut, **self.parsePairs(de_values, lookup)}
