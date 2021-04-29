@@ -572,6 +572,9 @@ class EDM():
         Read a tabbed spreadsheet of docshares, recording OWNERS selected by the submittor.
         :param inFile: .xlsx spreadsheet of same format as exported by writeSelectedDocumentsXLSX()
         '''
+        # open database connection:
+        self.driverOracle.connect()
+        
         # sheet column indexes:
         OWNER = 0
         DOCID = 1
@@ -607,6 +610,10 @@ class EDM():
                     forum['attrs']['OWNER'] = owner
             else:
                 print('Forum not found: ' + sheet.title)
+        
+        # close database connection:
+        self.driverOracle.disconnect()
+
 
     OUTPUT_COLUMNS = [
         'FORUM ID',          #0 FORUMNAME
