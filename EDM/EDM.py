@@ -323,11 +323,10 @@ class EDM():
                 # all docshares have TABLEPREFIX:
                 if forum['attrs'].get('TABLEPREFIX', False):
                     # if there's already a docshare node, warn that this was previously loaded:
-                    if forum['attrs'].get('docshare', False):
-                        print("Reloading " + forum['name'])
-                    else:
+                    if not forum['attrs'].get('docshare', False):
                         print('loadDocshare forum: ' + forum['name'])                        
-                    self.__loadDocshare(forum)
+                    else:
+                        print("Already loaded forum: " + forum['name'])
                 
         # close database connection:
         self.driverOracle.disconnect()
@@ -470,11 +469,12 @@ class EDM():
             print(f"Load failed!")
             raise
      
-    def writeDocumentsXLSX(self, outFile, setForumOwner = True):        
+    def writeDocumentsXLSX(self, outFile, setForumOwner = True, maxDepth = 0):        
         '''
         Export docshares having an OWNER to a tabbed spreadsheet
         :param outFile: target filename for .xlsx file
         :param setForumOwner: if True, set owner on top-level docshare folders 
+        :param maxDepth: If >0 filter out deeper rows, for "coverage" view.
         '''
         outputBook = tablib.Databook()
         
@@ -500,7 +500,7 @@ class EDM():
                 
             # write a page to the outputBook for each docshare:
             if forum['attrs'].get('docshare', False):
-                self.__writeDocshare(outputBook, forum, forumOwner if setForumOwner else None)
+                self.__writeDocshare(outputBook, forum, forumOwner if setForumOwner else None, maxDepth)
 
         # export the outputBook:
         if outputBook.sheets():
@@ -510,12 +510,14 @@ class EDM():
         else:
             print("Nothing selected to write for " + outFile)  
                  
-    def __writeDocshare(self, outputBook, forum, forumOwner = None):
+    def __writeDocshare(self, outputBook, forum, forumOwner = None, maxDepth = 0):
         '''
         Write a single docshare to the given outputBook
         :param outputBook: tablib.Databook representing a tabbed spreadsheet
         :param owner: forum owner to be applied to the top-level docshare folders
         :param forum: Node from self.forums tree having docshare to write
+        :param forumOwner: If provided, we will set it at top-level docshare folders only
+        :param maxDepth: If >0 filter out deeper rows, for "coverage" view.
         '''
         sheet = tablib.Dataset(title=forum['name'])
         sheet.headers = ['OWNER', 'DOCID', 'DOCNUMBER', 'TITLE', 'EDM_URL', 'FILE_NAME', 'UPLOADFILEINFO']
@@ -537,35 +539,38 @@ class EDM():
                 
                 # skip rows with no useful content:
                 if docTitle or uploadFile or fileName:
-                           
-                    # Handle FolderFrame items:
-                    ffTarget = doc['attrs'].get('FOLDERFRAME', None)
-                    if ffTarget:
-                        url = 'http://edm.alma.cl/forums/alma/dispatch.cgi/{}/folderFrame/{}/'.format(forum['name'], ffTarget)
-                    else:
-                        url = 'http://edm.alma.cl/forums/alma/dispatch.cgi/{}/docProfile/{}'.format(forum['name'], doc['name'])
                     
-                    # rules for setting owner:
+                    # filter for maxDepth if specified:
                     depth = doc.get('depth', 0)
-                    if forumOwner:
-                        # if forumOwner was provided, we will set it at top-level docshare folders only:            
-                        owner = forumOwner if depth == 0 and ffTarget is None else None
-                    else:
-                        # if forumOwner was not provided, get it from the document node:
-                        owner = doc['attrs'].get('OWNER', '')
-    
-                    indent = '  ' * depth
-                    sheet.append([
-                        owner,
-                        doc['name'],
-                        doc['attrs'].get('DOCNUMBER', ''), 
-                        indent + docTitle.strip().replace('\n', '\s'),
-                        url,
-                        fileName,
-                        uploadFile.strip()
-                    ])
-                    
-        outputBook.add_sheet(sheet)
+                    if maxDepth and depth <= maxDepth:
+                           
+                        # Handle FolderFrame items:
+                        ffTarget = doc['attrs'].get('FOLDERFRAME', None)
+                        if ffTarget:
+                            url = 'http://edm.alma.cl/forums/alma/dispatch.cgi/{}/folderFrame/{}/'.format(forum['name'], ffTarget)
+                        else:
+                            url = 'http://edm.alma.cl/forums/alma/dispatch.cgi/{}/docProfile/{}'.format(forum['name'], doc['name'])
+                        
+                        # rules for setting owner:                    
+                        if forumOwner:
+                            # if forumOwner was provided, we will set it at top-level docshare folders only:            
+                            owner = forumOwner if depth == 0 and ffTarget is None else None
+                        else:
+                            # if forumOwner was not provided, get it from the document node:
+                            owner = doc['attrs'].get('OWNER', '')
+        
+                        indent = '  ' * depth
+                        sheet.append([
+                            owner,
+                            doc['name'],
+                            doc['attrs'].get('DOCNUMBER', ''), 
+                            indent + docTitle.strip().replace('\n', '\s'),
+                            url,
+                            fileName,
+                            uploadFile.strip()
+                        ])
+        if sheet.height > 1:
+            outputBook.add_sheet(sheet)
 
     def readDocumentsXLSX(self, inFile):
         '''
@@ -590,11 +595,11 @@ class EDM():
                 # cache the last OWNER we see while loading to assign to the forum
                 owner = None
                 # load the forum's documents tree:
-                if forum['attrs'].get('docshare', False):
-                    print("Reloading " + forum['name'])
-                else:
+                if not forum['attrs'].get('docshare', False):
                     print('loadDocshare forum: ' + forum['name'])                        
-                self.__loadDocshare(forum)
+                    self.__loadDocshare(forum)
+                else:
+                    print('Already loaded forum: ' + forum['name'])
                 # loop over rows in the sheet:
                 for row in sheet:
                     if row[OWNER]:
@@ -613,7 +618,6 @@ class EDM():
         
         # close database connection:
         self.driverOracle.disconnect()
-
 
     OUTPUT_COLUMNS = [
         'FORUM ID',          #0 FORUMNAME
