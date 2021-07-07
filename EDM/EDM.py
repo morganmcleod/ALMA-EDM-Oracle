@@ -324,7 +324,8 @@ class EDM():
                 if forum['attrs'].get('TABLEPREFIX', False):
                     # if there's already a docshare node, warn that this was previously loaded:
                     if not forum['attrs'].get('docshare', False):
-                        print('loadDocshare forum: ' + forum['name'])                        
+                        print('loadDocshare forum: ' + forum['name'])
+                        self.__loadDocshare(forum)
                     else:
                         print("Already loaded forum: " + forum['name'])
                 
@@ -542,7 +543,7 @@ class EDM():
                     
                     # filter for maxDepth if specified:
                     depth = doc.get('depth', 0)
-                    if maxDepth and depth <= maxDepth:
+                    if not maxDepth or depth <= maxDepth:
                            
                         # Handle FolderFrame items:
                         ffTarget = doc['attrs'].get('FOLDERFRAME', None)
